@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import os,re,sys,time,random,requests
+from datetime import datetime
 try:
     from patchright.sync_api import sync_playwright
     USING_PATCHRIGHT = True
@@ -527,6 +528,20 @@ def get_server_id(page):
         page.screenshot(path="server_id_error.png")
         return None
 
+DUE_FILE = "due_date.txt"  # 记录到期日（YYYY-MM-DD），工作流据此决定哪天运行
+
+def save_due_date(due_str):
+    """把页面上的到期时间（如 20 Oct 2026）转成 YYYY-MM-DD 写入 due_date.txt"""
+    try:
+        d = datetime.strptime(due_str.strip(), "%d %b %Y").date()
+        with open(DUE_FILE, "w", encoding="utf-8") as f:
+            f.write(d.isoformat())
+        log(f"💾 已记录到期日 {d.isoformat()} → {DUE_FILE}")
+        return True
+    except Exception as e:
+        log(f"⚠️ 记录到期日失败（{due_str}）: {e}")
+        return False
+
 def get_due_date(page):
     try:
         if SERVICE_URL not in page.url:
@@ -607,11 +622,7 @@ def renew_service(page):
             log(f"🖱️ 点击 Create Invoice（第 {attempt + 1} 次）...")
             try:
                 create_btn.wait_for(state="visible", timeout=30000)
-                try:
-                    create_btn.click(timeout=5000)
-                except Exception:
-                    log("⚠️ 普通点击被遮挡，改用 JS 点击...")
-                    create_btn.evaluate("el => el.click()")
+                create_btn.click(timeout=20000)
             except Exception as e:
                 log(f"⚠️ 点击 Create Invoice 失败: {e}")
                 solve_modal_turnstile(page, timeout=45)
@@ -705,6 +716,8 @@ def main():
             if renew_result == "NOT_TIME":
                 log("⏳ 未到续期时间，目前无法续期")
                 status = "⏳ 未到续期时间"
+                if old_due != "未知":
+                    save_due_date(old_due)  # 保持到期日记录最新
             elif renew_result is False:
                 log("❌ 续费失败，脚本退出。")
                 status = "❌ 续期失败"
@@ -712,6 +725,10 @@ def main():
                 new_due = get_due_date(page)
                 log(f"📆 续费后到期时间：{new_due}")
                 status = "✅ 续期成功"
+                if new_due != "未知":
+                    if new_due == old_due:
+                        log("⚠️ 续期后到期时间与续期前相同，页面可能尚未刷新")
+                    save_due_date(new_due)
 
             # 发送 Telegram 通知
             send_telegram_notification(status, old_due, new_due, current_ip)
