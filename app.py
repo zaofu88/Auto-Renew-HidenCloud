@@ -45,39 +45,6 @@ try {
 } catch (e) {}
 """
 
-# 隐藏 ncmp Cookie 同意横幅（它会盖住弹窗里的 Create Invoice 按钮并拦截点击）
-BANNER_CSS_JS = """
-(() => {
-  const add = () => {
-    try {
-      if (document.getElementById('__hide_ncmp')) return;
-      const s = document.createElement('style');
-      s.id = '__hide_ncmp';
-      s.textContent = '#ncmp__tool{display:none !important;pointer-events:none !important;}';
-      (document.head || document.documentElement).appendChild(s);
-    } catch (e) {}
-  };
-  add();
-  document.addEventListener('DOMContentLoaded', add);
-})();
-"""
-
-def dismiss_cookie_banner(page):
-    """用样式隐藏 ncmp Cookie 横幅（不点击、不删除节点，避免影响页面脚本）"""
-    try:
-        page.evaluate("""
-            () => {
-                if (!document.getElementById('__hide_ncmp')) {
-                    const s = document.createElement('style');
-                    s.id = '__hide_ncmp';
-                    s.textContent = '#ncmp__tool{display:none !important;pointer-events:none !important;}';
-                    (document.head || document.documentElement).appendChild(s);
-                }
-            }
-        """)
-    except Exception:
-        pass
-
 def get_current_ip(proxy_server=None):
     """获取当前出口IP"""
     proxies = {"http": proxy_server, "https": proxy_server} if (proxy_server and IS_PROXY) else None
@@ -404,7 +371,6 @@ def open_browser(p):
             proxy=proxy_arg,
         )
         ctx = browser.new_context(viewport=None, proxy=proxy_arg)
-        ctx.add_init_script(BANNER_CSS_JS)  # 隐藏 Cookie 横幅
         page = ctx.new_page()
         return browser, page
     log("⚠️ 未安装 patchright（建议 pip install patchright），退回原生 playwright，过 Cloudflare 能力较弱")
@@ -420,7 +386,6 @@ def open_browser(p):
     )
     page = ctx.new_page()
     page.add_init_script(STEALTH_JS)
-    page.add_init_script(BANNER_CSS_JS)  # 隐藏 Cookie 横幅
     return browser, page
 
 def _is_logged_in(page):
@@ -469,7 +434,6 @@ def login(page):
         page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
         handle_cloudflare(page, timeout=240)
         time.sleep(8) # 等页面完全加载
-        dismiss_cookie_banner(page)
         log("⌨️ 输入账号密码...")
         # 真实表单字段：input[name="username"]（可填邮箱或用户名）/ input[name="password"]
         user_input = page.locator('input[name="username"], input[name="email"], input[type="email"]').first
@@ -490,7 +454,6 @@ def login(page):
         
         log("🖱️ 点击登录按钮提交...")
         time.sleep(3) # 等Turnstile完全通过
-        dismiss_cookie_banner(page)
         try:
             page.click('button[type="submit"]', timeout=10000)
         except Exception:
@@ -593,14 +556,12 @@ def renew_service(page):
             page.goto(SERVICE_URL, wait_until="domcontentloaded", timeout=60000)
         handle_cloudflare(page)
         time.sleep(12) # 等待续期页面完全加载,未完全加载无法点击
-        dismiss_cookie_banner(page)  # 先清掉 Cookie 横幅，避免遮挡按钮
         log("🖱️ 准备点击 Renew 按钮...")
         renew_btn = page.locator('button:has-text("Renew")')
         create_btn = page.locator('button:has-text("Create Invoice")')
         modal_opened = False
         for i in range(6):
             try:
-                dismiss_cookie_banner(page)
                 renew_btn.wait_for(state="visible", timeout=10000)
                 renew_btn.scroll_into_view_if_needed()
                 log(f"🖱️ 第 {i+1} 次尝试点击 Renew...")
@@ -644,13 +605,15 @@ def renew_service(page):
         time.sleep(2)
         for attempt in range(6):
             log(f"🖱️ 点击 Create Invoice（第 {attempt + 1} 次）...")
-            dismiss_cookie_banner(page)  # 横幅可能在验证后重新出现
             try:
                 create_btn.wait_for(state="visible", timeout=30000)
-                create_btn.click(timeout=20000)
+                try:
+                    create_btn.click(timeout=5000)
+                except Exception:
+                    log("⚠️ 普通点击被遮挡，改用 JS 点击...")
+                    create_btn.evaluate("el => el.click()")
             except Exception as e:
                 log(f"⚠️ 点击 Create Invoice 失败: {e}")
-                dismiss_cookie_banner(page)
                 solve_modal_turnstile(page, timeout=45)
                 time.sleep(2)
                 continue
@@ -680,7 +643,6 @@ def renew_service(page):
         if page.url != new_invoice_url:
             page.goto(new_invoice_url)
         handle_cloudflare(page)
-        dismiss_cookie_banner(page)
 
         log("🔎 查找 Pay 按钮...")
         pay_btn = page.locator('a:has-text("Pay"):visible, button:has-text("Pay"):visible').first
