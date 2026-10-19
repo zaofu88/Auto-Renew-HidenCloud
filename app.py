@@ -63,23 +63,18 @@ BANNER_CSS_JS = """
 """
 
 def dismiss_cookie_banner(page):
-    """移除 ncmp Cookie 同意横幅，避免它拦截点击"""
+    """用样式隐藏 ncmp Cookie 横幅（不点击、不删除节点，避免影响页面脚本）"""
     try:
-        # 先尝试点同意按钮，让站点记住选择
-        for sel in ('#ncmp__tool button:has-text("Accept")',
-                    '#ncmp__tool button:has-text("Agree")',
-                    '#ncmp__tool button:has-text("Allow")',
-                    '#ncmp__tool button:has-text("OK")'):
-            try:
-                btn = page.locator(sel).first
-                if btn.count() > 0 and btn.is_visible():
-                    btn.click(timeout=2000)
-                    time.sleep(0.5)
-                    break
-            except Exception:
-                continue
-        # 兜底：直接从 DOM 删除，不依赖按钮文字
-        page.evaluate("() => { const el = document.getElementById('ncmp__tool'); if (el) el.remove(); }")
+        page.evaluate("""
+            () => {
+                if (!document.getElementById('__hide_ncmp')) {
+                    const s = document.createElement('style');
+                    s.id = '__hide_ncmp';
+                    s.textContent = '#ncmp__tool{display:none !important;pointer-events:none !important;}';
+                    (document.head || document.documentElement).appendChild(s);
+                }
+            }
+        """)
     except Exception:
         pass
 
@@ -625,6 +620,10 @@ def renew_service(page):
                     break
                 except:
                     log("⚠️ 弹窗未出现，可能是点击未响应，准备重试...")
+                    try:
+                        page.screenshot(path=f"renew_modal_try_{i+1}.png")
+                    except Exception:
+                        pass
                     time.sleep(2)
             except Exception as e:
                 log(f"❌ 点击尝试出错: {e}")
