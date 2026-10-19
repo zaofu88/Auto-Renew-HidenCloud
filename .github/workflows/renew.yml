@@ -3,7 +3,7 @@ name: Auto Renew HidenCloud
 on:
   workflow_dispatch:
   schedule:
-    - cron: '30 23 * * 0' # 根据到期时间的前一天推算星期几来续期，最后一个数字代表星期
+    - cron: '30 23 * * *' # 每天 UTC 23:30（北京时间 07:30）检查一次，只有到了"到期前一天"才真正续期
 
 permissions:
   contents: write
@@ -21,13 +21,44 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           persist-credentials: true
 
+      # 读取 due_date.txt（脚本续期成功后写入），判断今天是否已到"到期前一天"
+      - name: 📅 检查是否到续期日
+        id: check
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "手动触发，直接运行"
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ ! -s due_date.txt ]; then
+            echo "未找到 due_date.txt，首次运行"
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          due=$(tr -d '[:space:]' < due_date.txt)
+          if ! target=$(date -d "$due - 1 day" +%F 2>/dev/null); then
+            echo "due_date.txt 内容无法解析（$due），直接运行"
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          today=$(TZ=Asia/Shanghai date +%F)
+          echo "到期日: $due，续期日: $target，今天(北京时间): $today"
+          if [[ "$today" > "$target" || "$today" == "$target" ]]; then
+            echo "已到续期日，开始续期"
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "还没到续期日，跳过"
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: ⚙ 设置 Python
+        if: steps.check.outputs.should_run == 'true'
         uses: actions/setup-python@v6
         with:
           python-version: '3.13'
 
       - name: 🛠️ 安装系统依赖和python依赖
+        if: steps.check.outputs.should_run == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb
@@ -35,6 +66,7 @@ jobs:
           python -m patchright install --with-deps chrome
 
       - name: ⚙ 设置sing-box代理
+        if: steps.check.outputs.should_run == 'true'
         continue-on-error: true
         env:
           NODE_LINK: ${{ secrets.NODE_LINK }}
@@ -42,6 +74,7 @@ jobs:
           bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh)
 
       - name: 🚀 运行续期脚本
+        if: steps.check.outputs.should_run == 'true'
         env:
           EMAIL: ${{ secrets.EMAIL }}
           PASSWORD: ${{ secrets.PASSWORD }}
@@ -50,13 +83,15 @@ jobs:
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python -u app.py
 
-      # 更新时间到time.txt,避免6个月未更新导致工作流暂停
-      - name: 🕒 更新时间
+      # 提交 due_date.txt（下次运行日依据）和 time.txt（避免6个月未更新导致工作流暂停）
+      - name: 🕒 更新时间和到期日记录
+        if: steps.check.outputs.should_run == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           echo "$(TZ=Asia/Shanghai date +'%Y-%m-%d %H:%M:%S')" > time.txt
           git add time.txt
+          [ -f due_date.txt ] && git add due_date.txt
           if git diff --cached --quiet; then
             echo "No need to commit"
           else
