@@ -570,12 +570,23 @@ def renew_service(page):
         if page.url != SERVICE_URL:
             page.goto(SERVICE_URL, wait_until="domcontentloaded", timeout=60000)
         handle_cloudflare(page)
-        time.sleep(12) # 等待续期页面完全加载,未完全加载无法点击
+        # 等页面真正加载完再点：节点慢时按钮已显示但页面 JS 还没初始化，
+        # 此时点击不会有任何反应（之前常常前几次点击都白点）。
+        # networkidle 可能因广告/长连接永远不触发，所以超时就直接继续。
+        try:
+            page.wait_for_load_state("load", timeout=30000)
+        except Exception:
+            pass
+        try:
+            page.wait_for_load_state("networkidle", timeout=20000)
+        except Exception:
+            pass
+        time.sleep(8)
         log("🖱️ 准备点击 Renew 按钮...")
         renew_btn = page.locator('button:has-text("Renew")')
         create_btn = page.locator('button:has-text("Create Invoice")')
         modal_opened = False
-        for i in range(6):
+        for i in range(8):
             try:
                 renew_btn.wait_for(state="visible", timeout=10000)
                 renew_btn.scroll_into_view_if_needed()
@@ -590,7 +601,7 @@ def renew_service(page):
 
                 log("🖲️ 等待弹窗出现...")
                 try:
-                    create_btn.wait_for(state="visible", timeout=8000)
+                    create_btn.wait_for(state="visible", timeout=15000)
                     modal_opened = True
                     log("✅ 弹窗已成功弹出！")
                     break
