@@ -736,7 +736,20 @@ def renew_service(page):
             raise Exception("Pay 按钮点击失败（含遮挡兜底）")
         log("✅ Pay 按钮已点击")
         time.sleep(6) # 等待支付确认页面或跳转回服务页
-        page.goto(SERVICE_URL, wait_until="domcontentloaded", timeout=60000) # 返回服务管理页面以获取新的到期时间
+        # Pay 已点击，这一步只是回到管理页读新到期时间。节点偶尔会断线
+        # （ERR_CONNECTION_CLOSED），所以单独重试几次，别因此把已成功的续期误报成失败
+        last_err = None
+        for k in range(3):
+            try:
+                page.goto(SERVICE_URL, wait_until="domcontentloaded", timeout=60000)
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                log(f"⚠️ 返回管理页失败（第 {k+1}/3 次）: {str(e).splitlines()[0]}")
+                time.sleep(5)
+        if last_err:
+            raise last_err
         handle_cloudflare(page)
         return True
 
