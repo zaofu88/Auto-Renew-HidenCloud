@@ -563,6 +563,64 @@ def get_due_date(page):
         log(f"❌ 获取Due Date失败: {e}")
     return "未知"
 
+def _dismiss_cookie_banner(page):
+    """
+    关掉 ncmp（Cookie 同意横幅）。它会盖在按钮上方拦截鼠标点击
+    （日志里的 "ncmp__banner-inner ... intercepts pointer events"）。
+    先尝试点横幅上的按钮；点不了就直接把横幅从 DOM 里移除。
+    """
+    try:
+        for sel in ['#ncmp__tool button:has-text("Accept")',
+                    '#ncmp__tool button:has-text("Agree")',
+                    '#ncmp__tool button:has-text("Allow")',
+                    '#ncmp__tool button:has-text("同意")',
+                    '#ncmp__tool button']:
+            try:
+                btn = page.locator(sel).first
+                if btn.count() > 0 and btn.is_visible():
+                    btn.click(timeout=2000)
+                    log("🍪 已关闭 Cookie 同意横幅")
+                    time.sleep(0.5)
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    try:
+        removed = page.evaluate(
+            "() => { const el = document.getElementById('ncmp__tool'); "
+            "if (el) { el.remove(); return true; } return false; }"
+        )
+        if removed:
+            log("🍪 已直接移除挡路的 Cookie 横幅")
+            return True
+    except Exception:
+        pass
+    return False
+
+def _click_bypass_overlay(page, locator, timeout=8000):
+    """
+    点击元素；被横幅等元素挡住导致超时时：先清掉横幅再点一次，
+    还不行就用 JS 直接触发 click（不受遮挡影响）。
+    """
+    try:
+        locator.click(timeout=timeout)
+        return True
+    except Exception as e:
+        log(f"⚠️ 常规点击受阻（可能被遮挡），尝试处理遮挡层: {str(e).splitlines()[0]}")
+        _dismiss_cookie_banner(page)
+        try:
+            locator.click(timeout=timeout)
+            return True
+        except Exception:
+            try:
+                locator.evaluate("el => el.click()")
+                log("🖱️ 已用 JS 方式直接点击（绕过遮挡）")
+                return True
+            except Exception as e2:
+                log(f"❌ JS 兜底点击也失败: {e2}")
+                return False
+
 def renew_service(page):
 
     try:
@@ -582,6 +640,7 @@ def renew_service(page):
         except Exception:
             pass
         time.sleep(8)
+        _dismiss_cookie_banner(page)
         log("🖱️ 准备点击 Renew 按钮...")
         renew_btn = page.locator('button:has-text("Renew")')
         create_btn = page.locator('button:has-text("Create Invoice")')
@@ -591,7 +650,8 @@ def renew_service(page):
                 renew_btn.wait_for(state="visible", timeout=10000)
                 renew_btn.scroll_into_view_if_needed()
                 log(f"🖱️ 第 {i+1} 次尝试点击 Renew...")
-                renew_btn.click()
+                if not _click_bypass_overlay(page, renew_btn):
+                    raise Exception("Renew 按钮点击失败")
                 time.sleep(3) # 等待一小段时间，检测是否出现“未到续期时间”弹窗
                 page_text = page.locator("body").inner_text()
                 if "Renewal Restricted" in page_text or "can only renew" in page_text.lower():
@@ -633,7 +693,9 @@ def renew_service(page):
             log(f"🖱️ 点击 Create Invoice（第 {attempt + 1} 次）...")
             try:
                 create_btn.wait_for(state="visible", timeout=30000)
-                create_btn.click(timeout=20000)
+                _dismiss_cookie_banner(page)
+                if not _click_bypass_overlay(page, create_btn, timeout=8000):
+                    raise Exception("Create Invoice 点击失败（含遮挡兜底）")
             except Exception as e:
                 log(f"⚠️ 点击 Create Invoice 失败: {e}")
                 solve_modal_turnstile(page, timeout=45)
@@ -669,7 +731,9 @@ def renew_service(page):
         log("🔎 查找 Pay 按钮...")
         pay_btn = page.locator('a:has-text("Pay"):visible, button:has-text("Pay"):visible').first
         pay_btn.wait_for(state="visible", timeout=30000)
-        pay_btn.click()
+        _dismiss_cookie_banner(page)
+        if not _click_bypass_overlay(page, pay_btn, timeout=10000):
+            raise Exception("Pay 按钮点击失败（含遮挡兜底）")
         log("✅ Pay 按钮已点击")
         time.sleep(6) # 等待支付确认页面或跳转回服务页
         page.goto(SERVICE_URL, wait_until="domcontentloaded", timeout=60000) # 返回服务管理页面以获取新的到期时间
